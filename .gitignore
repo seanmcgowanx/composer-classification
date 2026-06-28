@@ -1,2 +1,4 @@
 /data/raw/
 /data/interim/
+
+.DS_Store
