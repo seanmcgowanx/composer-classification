@@ -1,4 +1,5 @@
 /data/raw/
 /data/interim/
+/data/processed/
 
 .DS_Store
