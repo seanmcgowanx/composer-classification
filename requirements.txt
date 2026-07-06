@@ -2,3 +2,6 @@ pretty_midi
 pandas
 numpy
 scikit-learn
+matplotlib
+seaborn
+ipykernel
