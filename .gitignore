@@ -2,5 +2,6 @@
 /data/interim/
 /data/processed/
 /docs/
+CLAUDE.md
 
 .DS_Store
