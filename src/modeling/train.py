@@ -1,10 +1,11 @@
 """Train the CNN/LSTM fusion model with stratified 5 fold cross validation.
 
 One invocation is one experiment: it trains a model per fold and aggregates the
-scores. All hyperparameters are fixed in src/config.py (the sweep winners; the
-experimentation phase is over). The only argument is a name for the run:
+scores. All hyperparameters are fixed in src/modeling/config.py (the sweep
+winners; the experimentation phase is over). The only argument is a name for the
+run:
 
-    /opt/miniconda3/envs/composer-classification/bin/python src/train.py final
+    /opt/miniconda3/envs/composer-classification/bin/python -m src.modeling.train final
 
 For each fold: the feature preprocessor is fit on the training folds only, the
 model trains on one random crop per song per epoch with class weighted cross
@@ -33,9 +34,9 @@ import torch.nn as nn
 from sklearn.metrics import balanced_accuracy_score, f1_score, log_loss
 from torch.utils.data import DataLoader
 
-from config import COMPOSERS, MODEL_COLS, Config
-from dataset import CropDataset, build_preprocessor, load_roll, load_table, song_windows
-from model import ComposerNet
+from src.modeling.config import COMPOSERS, MODEL_COLS, Config
+from src.modeling.dataset import CropDataset, build_preprocessor, load_roll, load_table, song_windows
+from src.modeling.model import ComposerNet
 
 
 def evaluate(net, val_df, val_feats, cfg, device):

@@ -23,7 +23,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import PowerTransformer, StandardScaler
 from torch.utils.data import Dataset
 
-from config import COMPOSERS, POWER_COLS, SCALE_COLS
+from src.modeling.config import COMPOSERS, POWER_COLS, SCALE_COLS
 
 
 def load_table(cfg):

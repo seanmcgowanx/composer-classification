@@ -2,8 +2,8 @@
 
 Reads MIDI files from data/interim/<composer>/ and writes one row per song
 (39 features + composer target) to data/processed/features.csv. The vector is
-the handcrafted half of the hybrid model (the piano roll from src/extract_roll.py
-is the other half) and enters at the dense head.
+the handcrafted half of the hybrid model (the piano roll from
+src/data/extract_roll.py is the other half) and enters at the dense head.
 
 Scope: only features encoding music theory the CNN cannot read off a fixed rate
 roll. Melodic intervals need skyline extraction, vertical intervals need interval

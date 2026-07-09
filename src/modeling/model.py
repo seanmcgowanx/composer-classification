@@ -16,7 +16,7 @@ and the decisions log.
 import torch
 import torch.nn as nn
 
-from config import COMPOSERS, MODEL_COLS, Config
+from src.modeling.config import COMPOSERS, MODEL_COLS, Config
 
 
 class ComposerNet(nn.Module):
