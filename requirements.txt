@@ -5,3 +5,5 @@ scikit-learn
 matplotlib
 seaborn
 ipykernel
+torch==2.13.0
+joblib==1.5.3

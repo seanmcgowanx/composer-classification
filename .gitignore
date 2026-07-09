@@ -2,6 +2,8 @@
 /data/interim/
 /data/processed/
 /docs/
+/experiments/
 CLAUDE.md
 
 .DS_Store
+__pycache__/
