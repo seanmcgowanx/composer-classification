@@ -1,22 +1,31 @@
-"""Shared configuration for the modeling stage.
+"""Shared constants for the modeling stage.
 
-Config holds every setting the pipeline and model use: file paths, data
-constants, and the hyperparameters of the final model. The values are frozen at
-the winners of the hyperparameter sweep (see the decisions log); the
-experimentation phase is over, so there are no command line overrides. Changing
-a hyperparameter means editing this file. Each training run still writes the
-values it used to config.json in its experiments/ folder, so every recorded
-result stays traceable to its exact settings.
+This module holds only what more than one module needs: file paths, the
+composer label order, the feature column lists, and the three data constants
+(crop length, fold count, seed). The training hyperparameters live at the top
+of train.py and the model sizes at the top of model.py, next to the code that
+uses them; all of them are frozen at the winners of the hyperparameter sweep
+(see the decisions log). Each training run still writes the values it used to
+config.json in its experiments/ folder, so every recorded result stays
+traceable to its exact settings.
 
-The feature column lists are module constants rather than Config fields because
-they are settled modeling decisions from the EDA, not knobs: DROP_COLS removes
-the two compositional dependencies, POWER_COLS gets yeo-johnson for heavy right
-tails, and everything else gets a plain StandardScaler. All fitting happens on
-the training folds only, inside train.py.
+The feature column lists encode settled modeling decisions from the EDA, not
+knobs: DROP_COLS removes the two compositional dependencies, POWER_COLS gets
+yeo-johnson for heavy right tails, and everything else gets a plain
+StandardScaler. All fitting happens on the training folds only, inside
+train.py.
 """
-from dataclasses import dataclass
+# paths, relative to the repo root (scripts run from there)
+MANIFEST_CSV = "data/processed/rolls_manifest.csv"
+FEATURES_CSV = "data/processed/features.csv"
+SPLITS_CSV = "data/processed/splits.csv"
+EXPERIMENTS_DIR = "experiments"
 
 COMPOSERS = ["bach", "beethoven", "chopin", "mozart"]  # fixed label order
+
+CROP_FRAMES = 300  # 30 seconds at 10 frames per second
+N_FOLDS = 5
+SEED = 42
 
 # the 39 extracted features, in features.csv column order
 FEATURE_COLS = [
@@ -43,35 +52,7 @@ MODEL_COLS = [c for c in FEATURE_COLS if c not in DROP_COLS]  # 37 model inputs
 SCALE_COLS = [c for c in MODEL_COLS if c not in POWER_COLS]  # StandardScaler group
 
 
-@dataclass
-class Config:
-    # paths, relative to the repo root (scripts run from there)
-    manifest_csv: str = "data/processed/rolls_manifest.csv"
-    features_csv: str = "data/processed/features.csv"
-    splits_csv: str = "data/processed/splits.csv"
-    experiments_dir: str = "experiments"
-
-    # data
-    crop_frames: int = 300  # 30 seconds at 10 frames per second
-    n_folds: int = 5
-    seed: int = 42
-
-    # training
-    batch_size: int = 32
-    lr: float = 1e-3  # sweep winner; the first baseline used 3e-4
-    weight_decay: float = 1e-4
-    epochs: int = 100  # a ceiling; early stopping decides the real length
-    patience: int = 10  # stop after this many epochs without improvement
-    num_workers: int = 0  # safest default on MPS
-
-    # model (the CNN channel sizes are fixed in model.py)
-    lstm_hidden: int = 128
-    dropout: float = 0.3
-
-
 if __name__ == "__main__":
-    from dataclasses import asdict
-
     assert len(FEATURE_COLS) == 39
     assert len(MODEL_COLS) == 37
     assert set(POWER_COLS) | set(SCALE_COLS) == set(MODEL_COLS)
@@ -79,4 +60,3 @@ if __name__ == "__main__":
     assert not set(DROP_COLS) & set(MODEL_COLS)
     print(f"{len(FEATURE_COLS)} extracted, {len(DROP_COLS)} dropped, "
           f"{len(POWER_COLS)} power transformed, {len(SCALE_COLS)} scaled")
-    print(asdict(Config()))

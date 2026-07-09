@@ -1,9 +1,9 @@
 """Train the CNN/LSTM fusion model with stratified 5 fold cross validation.
 
 One invocation is one experiment: it trains a model per fold and aggregates the
-scores. All hyperparameters are fixed in src/modeling/config.py (the sweep
-winners; the experimentation phase is over). The only argument is a name for the
-run:
+scores. All hyperparameters are fixed as constants at the top of this file and
+of model.py (the sweep winners; the experimentation phase is over). The only
+argument is a name for the run:
 
     /opt/miniconda3/envs/composer-classification/bin/python -m src.modeling.train final
 
@@ -24,7 +24,6 @@ import csv
 import json
 import sys
 import time
-from dataclasses import asdict
 from pathlib import Path
 
 import joblib
@@ -34,12 +33,21 @@ import torch.nn as nn
 from sklearn.metrics import balanced_accuracy_score, f1_score, log_loss
 from torch.utils.data import DataLoader
 
-from src.modeling.config import COMPOSERS, MODEL_COLS, Config
-from src.modeling.dataset import CropDataset, build_preprocessor, load_roll, load_table, song_windows
-from src.modeling.model import ComposerNet
+from src.modeling.config import (COMPOSERS, CROP_FRAMES, EXPERIMENTS_DIR,
+                                 MODEL_COLS, N_FOLDS, SEED)
+from src.modeling.dataset import (CropDataset, build_preprocessor, load_roll,
+                                  load_table, song_windows)
+from src.modeling.model import DROPOUT, LSTM_HIDDEN, ComposerNet
+
+BATCH_SIZE = 32
+LR = 1e-3  # sweep winner; the first baseline used 3e-4
+WEIGHT_DECAY = 1e-4
+EPOCHS = 100  # a ceiling; early stopping decides the real length
+PATIENCE = 10  # stop after this many epochs without improvement
+NUM_WORKERS = 0  # safest default on MPS
 
 
-def evaluate(net, val_df, val_feats, cfg, device):
+def evaluate(net, val_df, val_feats, device):
     """Score a held out fold: one prediction per song, averaged over windows."""
     # eval mode changes how dropout and batch norm behave: dropout stops
     # zeroing activations and batch norm uses its saved running averages,
@@ -52,7 +60,7 @@ def evaluate(net, val_df, val_feats, cfg, device):
         for i, path in enumerate(val_df["path"]):
             # cut the whole song into fixed windows and run them through the
             # model as one batch (even the longest song, 174 windows, fits)
-            windows = song_windows(load_roll(path), cfg.crop_frames).to(device)
+            windows = song_windows(load_roll(path), CROP_FRAMES).to(device)
             # the feature vector describes the whole song, so every window of
             # this song gets the same copy of it
             feats = torch.tensor(val_feats[i], device=device)
@@ -75,13 +83,13 @@ def evaluate(net, val_df, val_feats, cfg, device):
             balanced_accuracy_score(labels, preds))
 
 
-def train_fold(cfg, df, k, out_dir, device):
+def train_fold(df, k, out_dir, device):
     """Train on every fold except k, early stop on fold k, save the artifacts."""
     out_dir.mkdir(parents=True, exist_ok=True)
     # seed torch's random numbers (weight init, batch shuffling, dropout) so
     # rerunning this fold reproduces the same result; each fold gets its own
     # seed so the five models do not start from identical weights
-    torch.manual_seed(cfg.seed + k)
+    torch.manual_seed(SEED + k)
 
     # fold k is held out for scoring; the other four folds are the training set
     train_df = df[df["fold"] != k].reset_index(drop=True)
@@ -98,9 +106,9 @@ def train_fold(cfg, df, k, out_dir, device):
 
     # the dataset serves one random 30 second crop per song; the loader
     # shuffles song order each epoch and hands the model batches of 32
-    dataset = CropDataset(train_df, train_feats, cfg.crop_frames, seed=cfg.seed + k)
-    loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True,
-                        num_workers=cfg.num_workers)
+    dataset = CropDataset(train_df, train_feats, CROP_FRAMES, seed=SEED + k)
+    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True,
+                        num_workers=NUM_WORKERS)
 
     # class weights counter the imbalance: each composer's weight is the size
     # of an average class divided by that composer's size, so mistakes on
@@ -111,11 +119,11 @@ def train_fold(cfg, df, k, out_dir, device):
     criterion = nn.CrossEntropyLoss(
         weight=torch.tensor(weights, dtype=torch.float32, device=device))
 
-    net = ComposerNet(cfg).to(device)
+    net = ComposerNet().to(device)
     # AdamW is the optimizer that updates the weights after each batch;
     # weight_decay gently shrinks weights toward zero as regularization
-    optimizer = torch.optim.AdamW(net.parameters(), lr=cfg.lr,
-                                  weight_decay=cfg.weight_decay)
+    optimizer = torch.optim.AdamW(net.parameters(), lr=LR,
+                                  weight_decay=WEIGHT_DECAY)
 
     best_f1, best_bal_acc, best_epoch = -1.0, -1.0, -1
     epochs_since_best = 0
@@ -123,7 +131,7 @@ def train_fold(cfg, df, k, out_dir, device):
         writer = csv.writer(fh)
         writer.writerow(["epoch", "train_loss", "val_loss",
                          "val_macro_f1", "val_balanced_acc", "seconds"])
-        for epoch in range(cfg.epochs):
+        for epoch in range(EPOCHS):
             t0 = time.time()
 
             # one training pass: every song once, as one random crop
@@ -144,14 +152,14 @@ def train_fold(cfg, df, k, out_dir, device):
 
             # after each training pass, score the held out fold and append
             # one row to metrics.csv (flush makes it readable mid run)
-            val_loss, macro_f1, bal_acc = evaluate(net, val_df, val_feats, cfg, device)
+            val_loss, macro_f1, bal_acc = evaluate(net, val_df, val_feats, device)
             seconds = time.time() - t0
             writer.writerow([epoch, f"{train_loss:.4f}", f"{val_loss:.4f}",
                              f"{macro_f1:.4f}", f"{bal_acc:.4f}", f"{seconds:.1f}"])
             fh.flush()
 
             # early stopping: whenever val macro-F1 sets a new best, save the
-            # weights and reset the counter; after patience epochs with no
+            # weights and reset the counter; after PATIENCE epochs with no
             # new best, assume the model has peaked and stop this fold.
             # best.pt therefore always holds the peak epoch's weights, not
             # the weights from whenever training happened to end.
@@ -166,7 +174,7 @@ def train_fold(cfg, df, k, out_dir, device):
             print(f"fold {k} epoch {epoch}: train {train_loss:.4f} "
                   f"val {val_loss:.4f} macro-F1 {macro_f1:.4f} "
                   f"bal-acc {bal_acc:.4f} ({seconds:.0f}s){marker}")
-            if epochs_since_best >= cfg.patience:
+            if epochs_since_best >= PATIENCE:
                 print(f"fold {k}: early stop at epoch {epoch} "
                       f"(best epoch {best_epoch})")
                 break
@@ -178,27 +186,39 @@ def main():
     parser.add_argument("run_name", help="name for the experiments/ output folder")
     run_name = parser.parse_args().run_name
 
-    cfg = Config()
     # refuse to overwrite an existing run so results are never silently lost
-    run_dir = Path(cfg.experiments_dir) / run_name
+    run_dir = Path(EXPERIMENTS_DIR) / run_name
     if run_dir.exists():
         sys.exit(f"{run_dir} already exists; pick a new run name")
     run_dir.mkdir(parents=True)
     # record the exact settings this run used, for traceability
+    settings = {
+        "run_name": run_name,
+        "crop_frames": CROP_FRAMES,
+        "n_folds": N_FOLDS,
+        "seed": SEED,
+        "batch_size": BATCH_SIZE,
+        "lr": LR,
+        "weight_decay": WEIGHT_DECAY,
+        "epochs": EPOCHS,
+        "patience": PATIENCE,
+        "lstm_hidden": LSTM_HIDDEN,
+        "dropout": DROPOUT,
+    }
     with open(run_dir / "config.json", "w") as fh:
-        json.dump({**asdict(cfg), "run_name": run_name}, fh, indent=2)
+        json.dump(settings, fh, indent=2)
 
     # use the Apple GPU (MPS) when available, otherwise fall back to CPU
     device = "mps" if torch.backends.mps.is_available() else "cpu"
-    df = load_table(cfg)
+    df = load_table()
     print(f"run {run_name}: device {device}, {len(df)} songs, "
           f"{len(MODEL_COLS)} features")
 
     # train one model per fold; each fold's score comes from songs that model
     # never trained on, so together the five scores cover every song once
     results = {}
-    for k in range(cfg.n_folds):
-        results[k] = train_fold(cfg, df, k, run_dir / f"fold{k}", device)
+    for k in range(N_FOLDS):
+        results[k] = train_fold(df, k, run_dir / f"fold{k}", device)
 
     # the experiment's headline numbers: the average score across folds, with
     # the standard deviation showing how much the folds disagree
@@ -213,7 +233,7 @@ def main():
     with open(run_dir / "summary.json", "w") as fh:
         json.dump(summary, fh, indent=2)
     print(f"\n{run_name}: macro-F1 {summary['mean_macro_f1']:.4f} "
-          f"+/- {summary['std_macro_f1']:.4f} over {cfg.n_folds} folds")
+          f"+/- {summary['std_macro_f1']:.4f} over {N_FOLDS} folds")
 
 
 if __name__ == "__main__":

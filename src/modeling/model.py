@@ -9,18 +9,21 @@ feature vector (late fusion, per the decisions log) and mapped to 4 composer
 logits.
 
 The architecture is frozen at the hyperparameter sweep winner: three conv
-blocks with 16, 32, and 64 channels, and a one directional LSTM. Larger and
-smaller variants were tried and lost; the sweep results live in experiments/
-and the decisions log.
+blocks with 16, 32, and 64 channels, a one directional LSTM with 128 hidden
+units, and dropout 0.3. Larger and smaller variants were tried and lost; the
+sweep results live in experiments/ and the decisions log.
 """
 import torch
 import torch.nn as nn
 
-from src.modeling.config import COMPOSERS, MODEL_COLS, Config
+from src.modeling.config import COMPOSERS, CROP_FRAMES, MODEL_COLS
+
+LSTM_HIDDEN = 128
+DROPOUT = 0.3
 
 
 class ComposerNet(nn.Module):
-    def __init__(self, cfg):
+    def __init__(self):
         super().__init__()
         # each block is convolution, batch norm, relu, then a pool that halves
         # both axes, so the (88, 300) input leaves as (11, 37) with 64 channels
@@ -40,13 +43,13 @@ class ComposerNet(nn.Module):
             nn.ReLU(),
             nn.MaxPool2d(2),
         )
-        self.lstm = nn.LSTM(input_size=64, hidden_size=cfg.lstm_hidden,
+        self.lstm = nn.LSTM(input_size=64, hidden_size=LSTM_HIDDEN,
                             batch_first=True)
         self.head = nn.Sequential(
-            nn.Dropout(cfg.dropout),
-            nn.Linear(cfg.lstm_hidden + len(MODEL_COLS), 64),
+            nn.Dropout(DROPOUT),
+            nn.Linear(LSTM_HIDDEN + len(MODEL_COLS), 64),
             nn.ReLU(),
-            nn.Dropout(cfg.dropout),
+            nn.Dropout(DROPOUT),
             nn.Linear(64, len(COMPOSERS)),
         )
 
@@ -59,10 +62,9 @@ class ComposerNet(nn.Module):
 
 
 if __name__ == "__main__":
-    cfg = Config()
     for device in ["cpu"] + (["mps"] if torch.backends.mps.is_available() else []):
-        net = ComposerNet(cfg).to(device)
-        roll = torch.rand(8, 2, 88, cfg.crop_frames, device=device)
+        net = ComposerNet().to(device)
+        roll = torch.rand(8, 2, 88, CROP_FRAMES, device=device)
         feats = torch.randn(8, len(MODEL_COLS), device=device)
         logits = net(roll, feats)
         assert logits.shape == (8, len(COMPOSERS)), logits.shape

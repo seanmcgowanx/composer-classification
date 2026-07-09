@@ -23,14 +23,15 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import PowerTransformer, StandardScaler
 from torch.utils.data import Dataset
 
-from src.modeling.config import COMPOSERS, POWER_COLS, SCALE_COLS
+from src.modeling.config import (COMPOSERS, FEATURES_CSV, MANIFEST_CSV,
+                                 POWER_COLS, SCALE_COLS, SPLITS_CSV)
 
 
-def load_table(cfg):
+def load_table():
     """Join manifest, features, and splits into one row per song."""
-    manifest = pd.read_csv(cfg.manifest_csv)
-    features = pd.read_csv(cfg.features_csv)
-    splits = pd.read_csv(cfg.splits_csv)
+    manifest = pd.read_csv(MANIFEST_CSV)
+    features = pd.read_csv(FEATURES_CSV)
+    splits = pd.read_csv(SPLITS_CSV)
     df = manifest.merge(features, on=["filename", "composer"], validate="1:1")
     df = df.merge(splits, on=["filename", "composer"], validate="1:1")
     assert len(df) == len(manifest), "manifest, features, and splits disagree"

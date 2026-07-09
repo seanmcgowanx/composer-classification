@@ -16,22 +16,22 @@ import numpy as np
 import pandas as pd
 import torch
 
-from src.modeling.config import COMPOSERS, MODEL_COLS
+from src.modeling.config import COMPOSERS, CROP_FRAMES, MODEL_COLS, N_FOLDS
 from src.modeling.dataset import load_roll, load_table, song_windows
 from src.modeling.model import ComposerNet
 
 
-def oof_predictions(run_dir, cfg, device):
+def oof_predictions(run_dir, device):
     """One row per song: fold, true composer, class probabilities, prediction."""
     run_dir = Path(run_dir)
-    df = load_table(cfg)
+    df = load_table()
     rows = []
-    for k in range(cfg.n_folds):
+    for k in range(N_FOLDS):
         fold_dir = run_dir / f"fold{k}"
         # the fold's fitted preprocessor and best weights, exactly as train.py
         # saved them at that fold's best epoch
         pre = joblib.load(fold_dir / "preprocessing.joblib")
-        net = ComposerNet(cfg).to(device)
+        net = ComposerNet().to(device)
         net.load_state_dict(torch.load(fold_dir / "best.pt", map_location=device))
         net.eval()
 
@@ -42,7 +42,7 @@ def oof_predictions(run_dir, cfg, device):
             for i, path in enumerate(val_df["path"]):
                 # same scoring as train.py's evaluate: every window of the song
                 # in one batch, softmax to probabilities, average the windows
-                windows = song_windows(load_roll(path), cfg.crop_frames).to(device)
+                windows = song_windows(load_roll(path), CROP_FRAMES).to(device)
                 feats = torch.tensor(val_feats[i], device=device)
                 feats = feats.expand(len(windows), -1)
                 probs = torch.softmax(net(windows, feats), dim=1)
