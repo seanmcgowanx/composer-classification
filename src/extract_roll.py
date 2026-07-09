@@ -23,26 +23,38 @@ PITCH_HI = 108
 
 def roll(pm):
     """Return a uint8 array of shape (2, 88, T) for one parsed MIDI file."""
+    # drums aren't pitched, so they don't belong on a piano roll
     notes = [n for inst in pm.instruments if not inst.is_drum for n in inst.notes]
     if not notes:
         return None
 
+    # song length in seconds × 10 frames/sec = number of time columns
     T = int(np.ceil(pm.get_end_time() * FS))
     if T == 0:
         return None
 
+    # make the empty grid
     arr = np.zeros((2, PITCH_HI - PITCH_LO + 1, T), dtype=np.uint8)
+
+    # paint each note
     for n in notes:
+        # which pitch row 
         p = min(max(n.pitch, PITCH_LO), PITCH_HI) - PITCH_LO
+        # which time frames it spans
         start = min(int(n.start * FS), T - 1)
         end = max(int(n.end * FS), start + 1)
+        # mark the onset (note begins here)
         arr[0, p, start] = 1
+        # fill the velocity across the note's duration
+        # if two notes overlap on the same key, the louder one wins rather than overwriting.
+        # cell becomes "the loudest velocity of any note covering this key at this frame," 
+        # rather than "whichever note the loop happened to process last."
         arr[1, p, start:end] = np.maximum(arr[1, p, start:end], n.velocity)
     return arr
 
 
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-rows = []
+rows = []  # one manifest record per song that succeeds
 skipped = 0
 for composer in COMPOSERS:
     folder = SRC / composer
@@ -52,8 +64,12 @@ for composer in COMPOSERS:
             pm = pretty_midi.PrettyMIDI(str(path))
             arr = roll(pm)
         except Exception as e:
+            # malformed MIDI is common; skip the file rather than kill the run
             arr = None
             print(f"skip (parse error): {path.name}: {e}")
+        # arr is None on a parse error or on an empty song from roll().
+        # extract_features.py must skip on the same two conditions, or the two
+        # outputs cover different song sets and can no longer be joined.
         if arr is None:
             skipped += 1
             continue

@@ -1,14 +1,19 @@
-"""Extract a handcrafted feature vector from each MIDI file into a single CSV.
+"""Extract a handcrafted music theory feature vector from each MIDI file into a CSV.
 
 Reads MIDI files from data/interim/<composer>/ and writes one row per song
-(~66 features + composer target) to data/processed/features.csv. The vector
-is the handcrafted half of the hybrid model (the piano roll from
-src/extract_roll.py is the other half) and enters at the dense head. Feature
-definitions follow docs/input-pipeline-design.md: melodic intervals from the
-skyline of each track, vertical intervals from the roll, pitch and key fit,
-texture, rhythm on the beat grid, and dynamics. Features that can fail on
-edge cases (tempo, key fit, beat grid) are written as NaN; imputation is the
-modeling pipeline's job, fit on the train split only.
+(39 features + composer target) to data/processed/features.csv. The vector is
+the handcrafted half of the hybrid model (the piano roll from src/extract_roll.py
+is the other half) and enters at the dense head.
+
+Scope: only features encoding music theory the CNN cannot read off a fixed rate
+roll. Melodic intervals need skyline extraction, vertical intervals need interval
+class knowledge, key fit needs the Krumhansl templates, and the rhythm features
+need a beat grid that a 10 frames per second roll does not expose. Descriptive
+statistics visible in the roll itself (pitch range, polyphony, note density,
+velocity) are deliberately not extracted.
+
+Features that can fail on edge cases (tempo, key fit, beat grid) are written as
+NaN; imputation is the modeling pipeline's job, fit on the train split only.
 """
 import numpy as np
 import pandas as pd
@@ -18,7 +23,7 @@ from pathlib import Path
 SRC = Path("data/interim")
 OUT = Path("data/processed/features.csv")
 COMPOSERS = ["bach", "beethoven", "chopin", "mozart"]
-ROLL_FS = 10  # piano roll samples per second
+ROLL_FS = 10  # piano roll samples per second, matches FS in extract_roll.py
 ONSET_TOL = 0.01  # seconds; notes starting closer than this share an onset
 DISSONANT = [1, 2, 6, 10, 11]  # interval classes: seconds, sevenths, tritone
 CONSONANT = [0, 3, 4, 5, 7, 8, 9]
@@ -58,7 +63,7 @@ def skyline_intervals(pm):
 
 
 def melodic_features(pm, f):
-    """Interval histogram and motion ratios from the skyline melody."""
+    """Interval histogram, direction ratio, and entropy from the skyline melody."""
     iv = skyline_intervals(pm)
     absi = np.abs(iv)
     hist = np.zeros(14)
@@ -67,12 +72,8 @@ def melodic_features(pm, f):
     for i in range(13):
         f[f"mi_{i}"] = hist[i]
     f["mi_13plus"] = hist[13]
-    f["mi_stepwise"] = hist[1] + hist[2]
-    f["mi_leap"] = float((absi >= 7).mean()) if absi.size else 0.0
     ups, downs = (iv > 0).sum(), (iv < 0).sum()
     f["mi_up_ratio"] = ups / (ups + downs) if (ups + downs) else np.nan
-    f["mi_mean"] = float(absi.mean()) if absi.size else 0.0
-    f["mi_std"] = float(absi.std()) if absi.size else 0.0
     f["mi_entropy"] = entropy(hist)
 
 
@@ -87,20 +88,14 @@ def vertical_features(binroll, f):
         f[f"vi_{i}"] = hist[i]
     dis, con = hist[DISSONANT].sum(), hist[CONSONANT].sum()
     f["vi_dissonance"] = dis / con if con else np.nan
-    f["vi_tritone"] = hist[6]
-    f["vi_perfect"] = hist[[0, 5, 7]].sum()
 
 
-def pitch_features(notes, binroll, f):
-    """Pitch statistics, pitch class entropy, and Krumhansl key fit."""
-    pitches = np.array([n.pitch for n in notes])
-    f["pitch_mean"] = pitches.mean()
-    f["pitch_std"] = pitches.std()
-    f["pitch_min"] = int(pitches.min())
-    f["pitch_max"] = int(pitches.max())
-    f["pitch_range"] = int(pitches.max() - pitches.min())
-    f["pitch_median"] = float(np.median(pitches))
+def key_features(notes, f):
+    """Pitch class entropy and Krumhansl key fit.
 
+    Reports how strongly the piece commits to any one key, not which key it is:
+    transposition is an arbitrary choice and says nothing about the composer.
+    """
     # duration weighted pitch class distribution
     pc_dur = np.zeros(12)
     for n in notes:
@@ -108,6 +103,7 @@ def pitch_features(notes, binroll, f):
     pc_p = pc_dur / pc_dur.sum() if pc_dur.sum() else pc_dur
     f["pc_entropy"] = entropy(pc_p)
 
+    # correlate against all 12 rotations of each profile, keep the best match
     if np.count_nonzero(pc_dur) >= 2:
         best_maj = max(np.corrcoef(pc_dur, np.roll(MAJOR_PROFILE, k))[0, 1]
                        for k in range(12))
@@ -116,60 +112,28 @@ def pitch_features(notes, binroll, f):
         f["key_fit"] = max(best_maj, best_min)
         f["key_major_leaning"] = best_maj - best_min
     else:
+        # a correlation needs at least two distinct values to be defined
         f["key_fit"] = np.nan
         f["key_major_leaning"] = np.nan
 
-    # bass register: mean lowest sounding pitch over sounding frames
-    sounding = binroll.any(axis=0)
-    if sounding.any():
-        f["bass_mean"] = float(binroll[:, sounding].argmax(axis=0).mean())
-    else:
-        f["bass_mean"] = np.nan
-
-
-def texture_features(pm, notes, binroll, f):
-    """Polyphony, voice count, and note density."""
-    end = pm.get_end_time()
-    active = binroll.sum(axis=0)
-    sounding = active[active > 0]
-    f["poly_mean"] = float(sounding.mean()) if sounding.size else 0.0
-    f["poly_std"] = float(sounding.std()) if sounding.size else 0.0
-    f["mono_frac"] = float((sounding == 1).mean()) if sounding.size else 0.0
-
-    # how many instrument tracks sound at once
-    T = binroll.shape[1]
-    inst_active = np.zeros(T)
-    for inst in pm.instruments:
-        if inst.is_drum or not inst.notes:
-            continue
-        track = np.zeros(T, dtype=bool)
-        for n in inst.notes:
-            s = min(int(n.start * ROLL_FS), T - 1)
-            track[s:max(int(n.end * ROLL_FS), s + 1)] = True
-        inst_active += track
-    f["voices_mean"] = float(inst_active[active > 0].mean()) if sounding.size else 0.0
-
-    f["note_density"] = len(notes) / end if end else 0.0
-    onsets = np.array([n.start for n in notes])
-    windows = np.histogram(onsets, bins=np.arange(0, end + 10, 10))[0]
-    f["density_std"] = float(windows.std()) if windows.size else 0.0
-
 
 def rhythm_features(pm, notes, f):
-    """Durations on the beat grid, syncopation proxy, and tempo."""
-    durations = np.array([n.end - n.start for n in notes])
-    f["dur_mean"] = durations.mean()
-    f["dur_std"] = durations.std()
+    """Note durations on the beat grid, syncopation proxy, and tempo.
 
+    Beat relative, not raw seconds: the same rhythm at half tempo must score the
+    same. This is what the fixed rate roll cannot express.
+    """
+    durations = np.array([n.end - n.start for n in notes])
     beats = pm.get_beats()
-    dur_bins = ["dur_sixteenth", "dur_eighth", "dur_quarter", "dur_half", "dur_whole"]
+    dur_bins = ["dur_sixteenth", "dur_eighth", "dur_quarter", "dur_half"]
     if len(beats) >= 2:
         beat_len = np.diff(beats)
         idx = np.clip(np.searchsorted(beats, [n.start for n in notes], side="right") - 1,
                       0, len(beat_len) - 1)
         local = beat_len[idx]
         dur_beats = durations / local
-        # bins centered on sixteenth, eighth, quarter, half, whole
+        # bins centered on sixteenth, eighth, quarter, half, whole; the whole bin
+        # feeds the entropy but is not emitted, being 1 minus the other four
         hist = np.histogram(dur_beats, bins=[0, 0.375, 0.75, 1.5, 3, np.inf])[0]
         hist = hist / hist.sum() if hist.sum() else hist
         for name, v in zip(dur_bins, hist):
@@ -194,20 +158,8 @@ def rhythm_features(pm, notes, f):
         f["tempo"] = np.nan
 
 
-def dynamics_features(pm, notes, f):
-    """Velocity statistics and the flat velocity flag."""
-    vel = np.array([n.velocity for n in notes])
-    f["vel_mean"] = vel.mean()
-    f["vel_std"] = vel.std()
-    f["vel_range"] = int(vel.max() - vel.min())
-    f["vel_flat"] = float(vel.std() == 0)
-    track_stds = [np.std([n.velocity for n in inst.notes])
-                  for inst in pm.instruments if not inst.is_drum and inst.notes]
-    f["vel_track_std"] = float(np.mean(track_stds)) if track_stds else 0.0
-
-
 def features(pm):
-    """Return a dict of ~66 numeric features for one parsed MIDI file."""
+    """Return a dict of 39 numeric features for one parsed MIDI file."""
     notes = [n for inst in pm.instruments if not inst.is_drum for n in inst.notes]
     if not notes:
         return None
@@ -219,10 +171,8 @@ def features(pm):
     f = {}
     melodic_features(pm, f)
     vertical_features(binroll, f)
-    pitch_features(notes, binroll, f)
-    texture_features(pm, notes, binroll, f)
+    key_features(notes, f)
     rhythm_features(pm, notes, f)
-    dynamics_features(pm, notes, f)
     return f
 
 
@@ -238,6 +188,7 @@ for composer in COMPOSERS:
         except Exception as e:
             f = None
             print(f"skip (parse error): {path.name}: {e}")
+        # same skip rule as extract_roll.py: parse failure or zero notes
         if f is None:
             skipped += 1
             continue
