@@ -3,8 +3,8 @@
 ComposerNet takes two inputs per example: a piano roll crop of shape
 (batch, 2, 88, 300) and a preprocessed feature vector of shape (batch, 37). A
 roll encoder turns the roll into a fixed 128 wide summary; that summary is
-concatenated with the handcrafted feature vector (late fusion, per the decisions
-log) and mapped to 4 composer logits. The frozen model uses the hybrid encoder:
+concatenated with the handcrafted feature vector and mapped to 4 composer
+logits. The frozen model uses the hybrid encoder:
 the CNN reads the roll like an image and shrinks it step by step, then the LSTM
 reads the CNN's output left to right as a sequence over time and returns its
 final hidden state as the summary.
@@ -12,23 +12,12 @@ final hidden state as the summary.
 The architecture is frozen at the hyperparameter sweep winner: three conv
 blocks with 16, 32, and 64 channels, a one directional LSTM with 128 hidden
 units, and dropout 0.3. Larger and smaller variants were tried and lost; the
-sweep results live in experiments/ and the decisions log.
+sweep results live in experiments/.
 
-The two single input arms (roll only and features only) were ablated to measure
-what fusion buys over either input alone; fusion won on both comparisons (see
-the decisions log). That input ablation is settled, so its branch switch is gone
-and ComposerNet always fuses both inputs.
-
-RollCnnEncoder and RollLstmEncoder are the plain single architecture models in
-the paper's core comparison: hybrid against CNN only against LSTM only, all
-fusing the same handcrafted features, asking whether the CNN and LSTM together
-earn their complexity over either sequence model alone. On our corpus the three
-are statistically indistinguishable (see the decisions log), so this comparison
-is a first class result, not throwaway scaffolding. The CNN only and LSTM only
-arms reuse the hybrid's frozen hyperparameters, which were swept for the hybrid,
-so their scores are a floor for each architecture rather than its own best case;
-the decisions log records this caveat, and it only strengthens the null since
-both match the hybrid despite the handicap.
+RollCnnEncoder and RollLstmEncoder are the two plain single architecture roll
+encoders, selectable in place of the hybrid; ComposerNet fuses any of the three
+with the feature vector the same way. All three reuse the hybrid's frozen
+hyperparameters.
 """
 import torch
 import torch.nn as nn
@@ -80,12 +69,10 @@ class RollHybridEncoder(nn.Module):
 
 
 class RollCnnEncoder(nn.Module):
-    """The plain CNN arm of the core comparison: conv stack, pool over time.
+    """Plain CNN roll encoder: the conv stack, then a mean over time.
 
-    Replaces the LSTM's ordered read of the frame sequence with a mean over
-    time, so this arm measures what sequence modeling buys on top of the CNN. A
-    linear projection matches the hybrid's 128 wide summary so the head is
-    unchanged.
+    Drops the LSTM in favor of averaging the frame sequence. A linear projection
+    matches the hybrid's 128 wide summary so the fused head is unchanged.
     """
     def __init__(self):
         super().__init__()
@@ -99,11 +86,10 @@ class RollCnnEncoder(nn.Module):
 
 
 class RollLstmEncoder(nn.Module):
-    """The plain LSTM arm of the core comparison: LSTM over raw roll frames.
+    """Plain LSTM roll encoder: LSTM over the raw roll frames, no conv.
 
     Each time frame's 2 channels by 88 pitches is flattened to 176 inputs and
-    read left to right at full pitch resolution, so this arm measures what the
-    CNN's learned features buy on top of recurrence.
+    read left to right at full pitch resolution.
     """
     def __init__(self):
         super().__init__()
@@ -119,7 +105,7 @@ class RollLstmEncoder(nn.Module):
 
 
 # the roll encoders train.py can select; "hybrid" is the frozen model, the other
-# two are the plain single architecture arms of the core comparison
+# two are the plain single architecture encoders
 ENCODERS = {
     "hybrid": RollHybridEncoder,
     "cnn": RollCnnEncoder,
@@ -131,9 +117,9 @@ class ComposerNet(nn.Module):
     """Fuse a roll summary with the feature vector and map to composer logits.
 
     Defaults to the frozen hybrid encoder, so ComposerNet() reproduces
-    experiments/final. The roll_encoder argument selects which arm of the core
-    comparison runs (hybrid, cnn, or lstm); every encoder returns a 128 wide
-    summary, so the fused head is identical across them.
+    experiments/final. The roll_encoder argument (hybrid, cnn, or lstm) selects
+    the roll encoder; every encoder returns a 128 wide summary, so the fused head
+    is identical across them.
     """
     def __init__(self, roll_encoder="hybrid"):
         super().__init__()

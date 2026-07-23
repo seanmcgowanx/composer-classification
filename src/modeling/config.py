@@ -4,10 +4,10 @@ This module holds only what more than one module needs: file paths, the
 composer label order, the feature column lists, and the three data constants
 (crop length, fold count, seed). The training hyperparameters live at the top
 of train.py and the model sizes at the top of model.py, next to the code that
-uses them; all of them are frozen at the winners of the hyperparameter sweep
-(see the decisions log). Each training run still writes the values it used to
-config.json in its experiments/ folder, so every recorded result stays
-traceable to its exact settings.
+uses them; all of them are frozen at the winners of the hyperparameter sweep.
+Each training run still writes the values it used to config.json in its
+experiments/ folder, so every recorded result stays traceable to its exact
+settings.
 
 The feature column lists encode settled modeling decisions from the EDA, not
 knobs: DROP_COLS removes the two compositional dependencies, POWER_COLS gets
@@ -44,7 +44,7 @@ FEATURE_COLS = [
     "offbeat_rate", "tempo",
 ]
 
-# decided in the EDA (notebooks/eda.ipynb) and the decisions log
+# decided in the EDA (notebooks/eda.ipynb)
 DROP_COLS = ["mi_11", "vi_11"]  # compositional dependencies of their histograms
 POWER_COLS = ["vi_2", "vi_dissonance", "mi_12", "vi_1", "mi_13plus", "mi_8"]
 

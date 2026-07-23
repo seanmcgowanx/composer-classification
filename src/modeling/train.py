@@ -7,26 +7,18 @@ argument is a name for the run:
 
     /opt/miniconda3/envs/composer-classification/bin/python -m src.modeling.train final
 
-The single input ablations (roll only, features only) were run and lost to
-fusion; that switch and its model wiring have since been removed, so train.py
-always fuses both inputs. The decisions log records what the ablation measured.
-
---roll-encoder {hybrid,cnn,lstm} selects which arm of the paper's core
-comparison runs; it is not a hyperparameter. It defaults to hybrid, the frozen
-model, so the plain command reproduces experiments/final. cnn and lstm are the
-plain single architecture models, each fusing the same handcrafted features, and
-the comparison asks whether the CNN and LSTM together earn their complexity over
-either alone (they do not on our corpus; see the decisions log). The two plain
-arms reuse the hybrid's frozen hyperparameters, swept for the hybrid, so their
-scores are a floor for each architecture, not its own best case (recorded in the
-decisions log).
+--roll-encoder {hybrid,cnn,lstm} selects the roll encoder; it is not a
+hyperparameter. It defaults to hybrid, the frozen model, so the plain command
+reproduces experiments/final. cnn and lstm swap in the plain single architecture
+encoders, each still fusing the same handcrafted features. All three reuse the
+hybrid's frozen hyperparameters.
 
 For each fold: the feature preprocessor is fit on the training folds only, the
 model trains on one random crop per song per epoch with class weighted cross
 entropy, and the held out fold is scored by cutting each song into windows and
 averaging the window probabilities into one song prediction. The held out fold
 drives both early stopping and the reported metrics, so cross validation
-estimates are mildly optimistic (disclosed in the decisions log).
+estimates are mildly optimistic.
 
 Artifacts land in experiments/<run_name>/: config.json (the settings used),
 summary.json (per fold and average scores), and one folder per fold holding
