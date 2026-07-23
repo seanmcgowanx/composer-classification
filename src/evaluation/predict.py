@@ -10,10 +10,6 @@ song, keeping each window's own probabilities rather than averaging them. It
 answers a different question: how well the model classifies a single 30 second
 clip (the Shazam style task) versus a whole piece. The 03_model_evaluation
 notebook uses it to compare the two.
-
-Each song is scored by the one model that never trained on it, so pooling the
-five folds gives one honest prediction per song for all 1,628 songs. That
-pooled table is what the 03_model_evaluation notebook analyzes.
 """
 from pathlib import Path
 
@@ -34,8 +30,7 @@ def oof_predictions(run_dir, device):
     rows = []
     for k in range(N_FOLDS):
         fold_dir = run_dir / f"fold{k}"
-        # the fold's fitted preprocessor and best weights, exactly as train.py
-        # saved them at that fold's best epoch
+        # the fold's fitted preprocessor and best weights
         pre = joblib.load(fold_dir / "preprocessing.joblib")
         net = ComposerNet().to(device)
         net.load_state_dict(torch.load(fold_dir / "best.pt", map_location=device))

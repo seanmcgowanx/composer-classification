@@ -14,11 +14,9 @@ encoders, each still fusing the same handcrafted features. All three reuse the
 hybrid's frozen hyperparameters.
 
 For each fold: the feature preprocessor is fit on the training folds only, the
-model trains on one random crop per song per epoch with class weighted cross
-entropy, and the held out fold is scored by cutting each song into windows and
-averaging the window probabilities into one song prediction. The held out fold
-drives both early stopping and the reported metrics, so cross validation
-estimates are mildly optimistic.
+model trains on random crops with class weighted cross entropy, and the held out
+fold is scored by windowing each song and averaging the window probabilities. The
+held out fold drives both early stopping and the reported metrics.
 
 Artifacts land in experiments/<run_name>/: config.json (the settings used),
 summary.json (per fold and average scores), and one folder per fold holding
@@ -37,6 +35,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from sklearn.metrics import balanced_accuracy_score, f1_score, log_loss
+from sklearn.utils.class_weight import compute_class_weight
 from torch.utils.data import DataLoader
 
 from src.modeling.config import (COMPOSERS, CROP_FRAMES, EXPERIMENTS_DIR,
@@ -55,24 +54,19 @@ NUM_WORKERS = 0  # safest default on MPS
 
 def evaluate(net, val_df, val_feats, device):
     """Score a held out fold: one prediction per song, averaged over windows."""
-    # eval mode changes how dropout and batch norm behave: dropout stops
-    # zeroing activations and batch norm uses its saved running averages,
-    # so the same song always gets the same prediction
     net.eval()
     all_probs = []
-    # no_grad tells torch not to track gradients; we are only predicting,
-    # and skipping the bookkeeping makes this loop faster and lighter
     with torch.no_grad():
         for i, path in enumerate(val_df["path"]):
             # cut the whole song into fixed windows and run them through the
-            # model as one batch (even the longest song, 174 windows, fits)
+            # model as one batch 
             windows = song_windows(load_roll(path), CROP_FRAMES).to(device)
             # the feature vector describes the whole song, so every window of
             # this song gets the same copy of it
             feats = torch.tensor(val_feats[i], device=device)
             feats = feats.expand(len(windows), -1)
-            # softmax turns the model's raw scores (logits) into probabilities
-            # that sum to 1; averaging those over the windows gives one
+            # softmax turns the logits into probabilities that
+            # sum to 1; averaging those over the windows gives one
             # probability per composer for the whole song
             probs = torch.softmax(net(windows, feats), dim=1)
             all_probs.append(probs.mean(dim=0).cpu().numpy())
@@ -80,10 +74,7 @@ def evaluate(net, val_df, val_feats, device):
     labels = val_df["label"].to_numpy()
     # the predicted composer is whichever probability is highest
     preds = all_probs.argmax(axis=1)
-    # three scores per epoch: log_loss judges the probabilities themselves
-    # (confidently wrong costs more than unsure), macro-F1 averages F1 over the
-    # 4 composers so Bach's size cannot hide bad Chopin predictions, and
-    # balanced accuracy is the average of the 4 per composer recall rates
+
     return (log_loss(labels, all_probs, labels=range(len(COMPOSERS))),
             f1_score(labels, preds, average="macro"),
             balanced_accuracy_score(labels, preds))
@@ -92,7 +83,7 @@ def evaluate(net, val_df, val_feats, device):
 def train_fold(df, k, out_dir, device, roll_encoder):
     """Train on every fold except k, early stop on fold k, save the artifacts."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    # seed torch's random numbers (weight init, batch shuffling, dropout) so
+
     # rerunning this fold reproduces the same result; each fold gets its own
     # seed so the five models do not start from identical weights
     torch.manual_seed(SEED + k)
@@ -102,9 +93,7 @@ def train_fold(df, k, out_dir, device, roll_encoder):
     val_df = df[df["fold"] == k].reset_index(drop=True)
 
     # fit the feature preprocessing (median fill, yeo-johnson, standardize) on
-    # the training songs only, then apply it to both sides; fitting on all
-    # songs would leak the held out fold's statistics into training. saving
-    # the fitted pipeline lets later analysis apply the exact same transform.
+    # the training songs only, then apply it to both sides
     pre = build_preprocessor()
     train_feats = pre.fit_transform(train_df[MODEL_COLS]).to_numpy(np.float32)
     val_feats = pre.transform(val_df[MODEL_COLS]).to_numpy(np.float32)
@@ -116,12 +105,11 @@ def train_fold(df, k, out_dir, device, roll_encoder):
     loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True,
                         num_workers=NUM_WORKERS)
 
-    # class weights counter the imbalance: each composer's weight is the size
-    # of an average class divided by that composer's size, so mistakes on
-    # rare Chopin (about 8% of songs) cost roughly 8 times more than mistakes
-    # on Bach (63%), and the loss cannot be minimized by just guessing Bach
-    counts = train_df["label"].value_counts().sort_index().to_numpy()
-    weights = len(train_df) / (len(COMPOSERS) * counts)
+    # class weights counter the imbalance: sklearn's "balanced" gives each
+    # composer the size of an average class divided by that composer's size
+    weights = compute_class_weight("balanced",
+                                   classes=np.arange(len(COMPOSERS)),
+                                   y=train_df["label"].to_numpy())
     criterion = nn.CrossEntropyLoss(
         weight=torch.tensor(weights, dtype=torch.float32, device=device))
 
@@ -141,18 +129,17 @@ def train_fold(df, k, out_dir, device, roll_encoder):
             t0 = time.time()
 
             # one training pass: every song once, as one random crop
-            net.train()  # the opposite of net.eval(): dropout active again
+            net.train()  
             losses = []
             for roll, feats, label in loader:
-                # move the batch to the same device (GPU) as the model
+                # move the batch to the same device as the model
                 roll, feats, label = roll.to(device), feats.to(device), label.to(device)
-                # the standard pytorch step: clear old gradients, run the
-                # batch forward, measure the loss, run backward to compute
-                # gradients, and let the optimizer nudge every weight
+
                 optimizer.zero_grad()
                 loss = criterion(net(roll, feats), label)
                 loss.backward()
                 optimizer.step()
+
                 losses.append(loss.item())
             train_loss = float(np.mean(losses))
 
@@ -167,8 +154,6 @@ def train_fold(df, k, out_dir, device, roll_encoder):
             # early stopping: whenever val macro-F1 sets a new best, save the
             # weights and reset the counter; after PATIENCE epochs with no
             # new best, assume the model has peaked and stop this fold.
-            # best.pt therefore always holds the peak epoch's weights, not
-            # the weights from whenever training happened to end.
             marker = ""
             if macro_f1 > best_f1:
                 best_f1, best_bal_acc, best_epoch = macro_f1, bal_acc, epoch
@@ -232,8 +217,7 @@ def main():
     for k in range(N_FOLDS):
         results[k] = train_fold(df, k, run_dir / f"fold{k}", device, roll_encoder)
 
-    # the experiment's headline numbers: the average score across folds, with
-    # the standard deviation showing how much the folds disagree
+    # the average score across folds, with std
     f1s = [r["macro_f1"] for r in results.values()]
     bal_accs = [r["balanced_acc"] for r in results.values()]
     summary = {

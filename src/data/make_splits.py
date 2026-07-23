@@ -28,4 +28,3 @@ assert (df["fold"] >= 0).all()
 df.to_csv(OUT, index=False)
 
 print(f"wrote {OUT}: {len(df)} rows, {N_FOLDS} folds, seed {SEED}")
-print(pd.crosstab(df["fold"], df["composer"]).to_string())
