@@ -85,3 +85,10 @@ Training uses one random crop per song per epoch, class weighted cross entropy f
 the 8 to 1 class imbalance, and early stopping on held out macro-F1. Evaluation
 scores whole songs by averaging window probabilities. All hyperparameters are
 frozen at the sweep winners as constants in `src/modeling/`.
+
+The rolls are not augmented. Transposition augmentation, the usual choice for
+symbolic music, was tested at a shift of -4 to +4 semitones (`train.py --transpose 4`)
+and scored macro-F1 0.798 +/- 0.023 against the frozen model's 0.812 +/- 0.021, worse
+on 4 of 5 folds and peaking 14 epochs earlier. Absolute pitch and key turn out to be
+real composer signal that the roll branch uses, so transposing it away costs more than
+the extra variety is worth. The decisions log has the full comparison.

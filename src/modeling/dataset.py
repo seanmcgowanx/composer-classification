@@ -10,9 +10,10 @@ nothing about the validation songs ever leaks into the scaling.
 
 CropDataset feeds training: each epoch it serves one random 30 second crop of
 every song, so a shuffled DataLoader keeps the batch class mix equal to the song
-class mix and the class weights stay valid. song_windows feeds evaluation: it
-cuts a whole song into fixed windows so the model can score each window and
-average the results into one song prediction.
+class mix and the class weights stay valid. song_windows feeds
+evaluation: it cuts a whole song into fixed windows so the model can score each
+window and average the results into one song prediction. Evaluation is never
+augmented; held out songs are scored exactly as they were played.
 """
 import numpy as np
 import pandas as pd

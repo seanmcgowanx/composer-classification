@@ -2,10 +2,19 @@
 
 One invocation is one experiment: it trains a model per fold and aggregates the
 scores. All hyperparameters are fixed as constants at the top of this file and
-of model.py (the sweep winners; the experimentation phase is over). The only
+of model.py (the sweep winners; the experimentation phase is over). The main
 argument is a name for the run:
 
     /opt/miniconda3/envs/composer-classification/bin/python -m src.modeling.train final
+
+One ablation switch, not a hyperparameter, defaulting to the frozen model so the
+plain command above reproduces experiments/final exactly. The decisions log
+records what it measured.
+
+--branch {both,roll,features} selects which inputs reach the classification
+head: both is the frozen fusion model, roll drops the feature vector, features
+drops the CNN and LSTM. The two ablated arms measure what fusion buys over
+either input alone.
 
 For each fold: the feature preprocessor is fit on the training folds only, the
 model trains on one random crop per song per epoch with class weighted cross
@@ -37,7 +46,7 @@ from src.modeling.config import (COMPOSERS, CROP_FRAMES, EXPERIMENTS_DIR,
                                  MODEL_COLS, N_FOLDS, SEED)
 from src.modeling.dataset import (CropDataset, build_preprocessor, load_roll,
                                   load_table, song_windows)
-from src.modeling.model import DROPOUT, LSTM_HIDDEN, ComposerNet
+from src.modeling.model import BRANCHES, DROPOUT, LSTM_HIDDEN, ComposerNet
 
 BATCH_SIZE = 32
 LR = 1e-3  # sweep winner; the first baseline used 3e-4
@@ -83,7 +92,7 @@ def evaluate(net, val_df, val_feats, device):
             balanced_accuracy_score(labels, preds))
 
 
-def train_fold(df, k, out_dir, device):
+def train_fold(df, k, out_dir, device, branch):
     """Train on every fold except k, early stop on fold k, save the artifacts."""
     out_dir.mkdir(parents=True, exist_ok=True)
     # seed torch's random numbers (weight init, batch shuffling, dropout) so
@@ -119,7 +128,7 @@ def train_fold(df, k, out_dir, device):
     criterion = nn.CrossEntropyLoss(
         weight=torch.tensor(weights, dtype=torch.float32, device=device))
 
-    net = ComposerNet().to(device)
+    net = ComposerNet(branch).to(device)
     # AdamW is the optimizer that updates the weights after each batch;
     # weight_decay gently shrinks weights toward zero as regularization
     optimizer = torch.optim.AdamW(net.parameters(), lr=LR,
@@ -184,7 +193,12 @@ def train_fold(df, k, out_dir, device):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_name", help="name for the experiments/ output folder")
-    run_name = parser.parse_args().run_name
+    parser.add_argument("--branch", choices=BRANCHES, default="both",
+                        help="which inputs reach the head (default both: the "
+                             "frozen fusion model; roll and features are the "
+                             "single input ablations)")
+    args = parser.parse_args()
+    run_name, branch = args.run_name, args.branch
 
     # refuse to overwrite an existing run so results are never silently lost
     run_dir = Path(EXPERIMENTS_DIR) / run_name
@@ -204,6 +218,7 @@ def main():
         "patience": PATIENCE,
         "lstm_hidden": LSTM_HIDDEN,
         "dropout": DROPOUT,
+        "branch": branch,
     }
     with open(run_dir / "config.json", "w") as fh:
         json.dump(settings, fh, indent=2)
@@ -212,13 +227,13 @@ def main():
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     df = load_table()
     print(f"run {run_name}: device {device}, {len(df)} songs, "
-          f"{len(MODEL_COLS)} features")
+          f"{len(MODEL_COLS)} features, branch {branch}")
 
     # train one model per fold; each fold's score comes from songs that model
     # never trained on, so together the five scores cover every song once
     results = {}
     for k in range(N_FOLDS):
-        results[k] = train_fold(df, k, run_dir / f"fold{k}", device)
+        results[k] = train_fold(df, k, run_dir / f"fold{k}", device, branch)
 
     # the experiment's headline numbers: the average score across folds, with
     # the standard deviation showing how much the folds disagree
