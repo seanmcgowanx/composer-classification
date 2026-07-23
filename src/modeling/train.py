@@ -9,8 +9,17 @@ argument is a name for the run:
 
 The single input ablations (roll only, features only) were run and lost to
 fusion; that switch and its model wiring have since been removed, so train.py
-now trains the frozen fusion model only. The decisions log records what the
-ablation measured.
+always fuses both inputs. The decisions log records what the ablation measured.
+
+--roll-encoder {hybrid,cnn,lstm} selects which arm of the paper's core
+comparison runs; it is not a hyperparameter. It defaults to hybrid, the frozen
+model, so the plain command reproduces experiments/final. cnn and lstm are the
+plain single architecture models, each fusing the same handcrafted features, and
+the comparison asks whether the CNN and LSTM together earn their complexity over
+either alone (they do not on our corpus; see the decisions log). The two plain
+arms reuse the hybrid's frozen hyperparameters, swept for the hybrid, so their
+scores are a floor for each architecture, not its own best case (recorded in the
+decisions log).
 
 For each fold: the feature preprocessor is fit on the training folds only, the
 model trains on one random crop per song per epoch with class weighted cross
@@ -42,7 +51,7 @@ from src.modeling.config import (COMPOSERS, CROP_FRAMES, EXPERIMENTS_DIR,
                                  MODEL_COLS, N_FOLDS, SEED)
 from src.modeling.dataset import (CropDataset, build_preprocessor, load_roll,
                                   load_table, song_windows)
-from src.modeling.model import DROPOUT, LSTM_HIDDEN, ComposerNet
+from src.modeling.model import DROPOUT, ENCODERS, LSTM_HIDDEN, ComposerNet
 
 BATCH_SIZE = 32
 LR = 1e-3  # sweep winner; the first baseline used 3e-4
@@ -88,7 +97,7 @@ def evaluate(net, val_df, val_feats, device):
             balanced_accuracy_score(labels, preds))
 
 
-def train_fold(df, k, out_dir, device):
+def train_fold(df, k, out_dir, device, roll_encoder):
     """Train on every fold except k, early stop on fold k, save the artifacts."""
     out_dir.mkdir(parents=True, exist_ok=True)
     # seed torch's random numbers (weight init, batch shuffling, dropout) so
@@ -124,7 +133,7 @@ def train_fold(df, k, out_dir, device):
     criterion = nn.CrossEntropyLoss(
         weight=torch.tensor(weights, dtype=torch.float32, device=device))
 
-    net = ComposerNet().to(device)
+    net = ComposerNet(roll_encoder).to(device)
     # AdamW is the optimizer that updates the weights after each batch;
     # weight_decay gently shrinks weights toward zero as regularization
     optimizer = torch.optim.AdamW(net.parameters(), lr=LR,
@@ -189,7 +198,12 @@ def train_fold(df, k, out_dir, device):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_name", help="name for the experiments/ output folder")
-    run_name = parser.parse_args().run_name
+    parser.add_argument("--roll-encoder", choices=list(ENCODERS), default="hybrid",
+                        help="which arm of the core comparison to train (default "
+                             "hybrid: the frozen fusion model; cnn and lstm are "
+                             "the plain single architecture models)")
+    args = parser.parse_args()
+    run_name, roll_encoder = args.run_name, args.roll_encoder
 
     # refuse to overwrite an existing run so results are never silently lost
     run_dir = Path(EXPERIMENTS_DIR) / run_name
@@ -209,6 +223,7 @@ def main():
         "patience": PATIENCE,
         "lstm_hidden": LSTM_HIDDEN,
         "dropout": DROPOUT,
+        "roll_encoder": roll_encoder,
     }
     with open(run_dir / "config.json", "w") as fh:
         json.dump(settings, fh, indent=2)
@@ -217,13 +232,13 @@ def main():
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     df = load_table()
     print(f"run {run_name}: device {device}, {len(df)} songs, "
-          f"{len(MODEL_COLS)} features")
+          f"{len(MODEL_COLS)} features, {roll_encoder} encoder")
 
     # train one model per fold; each fold's score comes from songs that model
     # never trained on, so together the five scores cover every song once
     results = {}
     for k in range(N_FOLDS):
-        results[k] = train_fold(df, k, run_dir / f"fold{k}", device)
+        results[k] = train_fold(df, k, run_dir / f"fold{k}", device, roll_encoder)
 
     # the experiment's headline numbers: the average score across folds, with
     # the standard deviation showing how much the folds disagree
